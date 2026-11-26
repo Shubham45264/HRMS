@@ -143,7 +143,16 @@ export const shiftManagementService = {
             (SELECT ec.last_working_day FROM exit_checklists ec WHERE ec.employee_id = e.id ORDER BY ec.created_at DESC LIMIT 1),
             (SELECT ec.resignation_date FROM exit_checklists ec WHERE ec.employee_id = e.id ORDER BY ec.created_at DESC LIMIT 1),
             e.internship_end_date
+            (SELECT eo.completed_date::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.completed_date IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT er.approved_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.approved_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT er.requested_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.requested_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT eo.last_working_day::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.last_working_day IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT ec.last_working_day::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.last_working_day IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+            (SELECT ec.resignation_date::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.resignation_date IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+            e.internship_end_date::text,
+            CASE WHEN LOWER(e.status) IN ('exited', 'terminated', 'completed', 'inactive') THEN TO_CHAR(e.updated_at, 'YYYY-MM-DD') ELSE NULL END
           ) AS "lastWorkingDay",
+          e.updated_at AS "updatedAt",
           e.shift_timing AS "defaultShiftTiming",
           COALESCE(e.avatar_url, u.avatar_url) AS "avatarUrl",
           d.name AS "departmentName",
@@ -193,6 +202,17 @@ export const shiftManagementService = {
         e.email,
         e.status,
         TO_CHAR(e.date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining",
+        COALESCE(
+          (SELECT eo.completed_date::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.completed_date IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+          (SELECT er.approved_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.approved_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+          (SELECT er.requested_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.requested_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+          (SELECT eo.last_working_day::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.last_working_day IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+          (SELECT ec.last_working_day::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.last_working_day IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+          (SELECT ec.resignation_date::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.resignation_date IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+          e.internship_end_date::text,
+          CASE WHEN LOWER(e.status) IN ('exited', 'terminated', 'completed', 'inactive') THEN TO_CHAR(e.updated_at, 'YYYY-MM-DD') ELSE NULL END
+        ) AS "lastWorkingDay",
+        e.updated_at AS "updatedAt",
         e.shift_timing AS "defaultShiftTiming",
         COALESCE(e.avatar_url, u.avatar_url) AS "avatarUrl",
         d.name AS "departmentName",
@@ -333,6 +353,12 @@ export const shiftManagementService = {
           ? emp.lastWorkingDay.toISOString().split('T')[0]
           : String(emp.lastWorkingDay).slice(0, 10);
         if (lwdStr < start) {
+      const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((emp.status || '').toLowerCase());
+      if (isExited) {
+        const lwdStr = emp.lastWorkingDay
+          ? (emp.lastWorkingDay instanceof Date ? emp.lastWorkingDay.toISOString().split('T')[0] : String(emp.lastWorkingDay).slice(0, 10))
+          : (emp.updatedAt ? (emp.updatedAt instanceof Date ? emp.updatedAt.toISOString().split('T')[0] : String(emp.updatedAt).slice(0, 10)) : null);
+        if (lwdStr && lwdStr < start) {
           return false;
         }
       }
@@ -556,9 +582,13 @@ export const shiftManagementService = {
 
       // Determine last working day for exited/completed employees
       const isExitedEmp = ['exited', 'completed', 'terminated'].includes((emp.status || '').toLowerCase());
+      // Determine last working day / exit date for exited/completed/terminated employees
+      const isExitedEmp = ['exited', 'completed', 'terminated', 'inactive'].includes((emp.status || '').toLowerCase());
+      const isTerminated = (emp.status || '').toLowerCase() === 'terminated';
       const empLwd = emp.lastWorkingDay
         ? (emp.lastWorkingDay instanceof Date ? emp.lastWorkingDay.toISOString().split('T')[0] : String(emp.lastWorkingDay).slice(0, 10))
         : null;
+        : (isExitedEmp ? (emp.updatedAt ? (emp.updatedAt instanceof Date ? emp.updatedAt.toISOString().split('T')[0] : String(emp.updatedAt).slice(0, 10)) : new Date().toISOString().split('T')[0]) : null);
 
       const cells = {};
       let scheduledDaysCount = 0;
@@ -579,6 +609,13 @@ export const shiftManagementService = {
         // If employee has exited/completed, any dates strictly after their last working day
         // did not have them working, so display as '-' and don't count towards schedule or weekly offs
         const isAfterExit = Boolean(isExitedEmp && empLwd && dateKey > empLwd);
+        // If employee has exited or is terminated, from that day onwards remove all shift associations:
+        // - Terminated: effective immediately on termination date (dateKey >= empLwd)
+        // - Exited/Completed: if attended on exit date, effective strictly after (dateKey > empLwd), otherwise dateKey >= empLwd
+        const hasAttendedOnExitDate = att && ['PRESENT', 'LATE', 'HALF_DAY', 'ON_DUTY'].includes(att.status);
+        const isAfterExit = Boolean(
+          isExitedEmp && empLwd && (dateKey > empLwd || (dateKey === empLwd && (!hasAttendedOnExitDate || isTerminated)))
+        );
 
         // If employee joined during this month, any dates strictly before their joining date
         // must not have shifts scheduled. Display as '-' and don't count towards scheduled days or weekly offs.
@@ -593,6 +630,7 @@ export const shiftManagementService = {
             isSunday: day.dayName === 'Sun' || day.isSunday === true,
             shiftType: 'NA',
             shiftLabel: isBeforeJoining ? 'Not Joined Yet' : 'Exited',
+            shiftLabel: isBeforeJoining ? 'Not Joined Yet' : (isTerminated ? 'Terminated' : 'Exited'),
             shortLabel: '-',
             displayType: 'NA',
             cellText: '-',
@@ -853,16 +891,47 @@ export const shiftManagementService = {
       await client.query('BEGIN');
 
       // Check employee's date of joining to prevent scheduling shifts before joining date
+      // Check employee's date of joining and exit/termination status to prevent scheduling shifts outside employment
       const empDateRes = await client.query(
         `SELECT TO_CHAR(date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining", first_name, last_name FROM employees WHERE id = $1`,
+        `SELECT 
+          TO_CHAR(e.date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining", 
+          e.first_name, 
+          e.last_name, 
+          e.status,
+          COALESCE(
+            (SELECT eo.completed_date::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.completed_date IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT er.approved_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.approved_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT er.requested_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.requested_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT eo.last_working_day::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.last_working_day IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT ec.last_working_day::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.last_working_day IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+            e.internship_end_date::text,
+            CASE WHEN LOWER(e.status) IN ('exited', 'terminated', 'completed', 'inactive') THEN TO_CHAR(e.updated_at, 'YYYY-MM-DD') ELSE NULL END
+          ) AS "lastWorkingDay"
+        FROM employees e 
+        WHERE e.id = $1`,
         [employeeId]
       );
       const empJoiningDate = empDateRes.rows[0]?.dateOfJoining;
+      const empStatus = (empDateRes.rows[0]?.status || '').toLowerCase();
+      const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes(empStatus);
+      const empLwd = empDateRes.rows[0]?.lastWorkingDay;
+
       if (empJoiningDate) {
         const validDates = dates.filter((d) => (typeof d === 'string' ? d.slice(0, 10) : '') >= empJoiningDate);
         if (validDates.length === 0) {
           const empName = empDateRes.rows[0]?.first_name || 'Employee';
           const err = new Error(`Cannot schedule shift: ${empName} joined on ${empJoiningDate}. Shifts must start on or after the joining date.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
+      if (isExited && empLwd) {
+        const postExitDates = dates.filter((d) => (typeof d === 'string' ? d.slice(0, 10) : '') >= empLwd);
+        if (postExitDates.length > 0) {
+          const empName = empDateRes.rows[0]?.first_name || 'Employee';
+          const err = new Error(`Cannot schedule shift: ${empName} has ${empStatus} as of ${empLwd}. Shifts cannot be scheduled on or after their exit date.`);
           err.statusCode = 400;
           throw err;
         }
@@ -876,6 +945,11 @@ export const shiftManagementService = {
 
         // Shifts must strictly start on or after the employee's date of joining
         if (empJoiningDate && dStr < empJoiningDate) {
+          continue;
+        }
+
+        // Shifts cannot be scheduled on or after employee's exit/termination date
+        if (isExited && empLwd && dStr >= empLwd) {
           continue;
         }
 

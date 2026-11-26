@@ -403,6 +403,18 @@ export const employeeService = {
         internshipStatusUpper === 'ENDED' ||
         (empTypeLower.includes('intern') && (statusLower === 'completed' || statusLower === 'exited'));
 
+      if (['exited', 'completed', 'terminated'].includes(statusLower)) {
+        try {
+          const exitDate = data.lastWorkingDay || data.resignationDate || data.internshipEndDate || new Date().toISOString().split('T')[0];
+          await pool.query(
+            `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date >= $2`,
+            [id, exitDate]
+          );
+        } catch (shiftErr) {
+          logger.warn('EMPLOYEE_UPDATE_EXIT_SHIFT', `Could not remove post-exit shift assignments: ${shiftErr.message}`);
+        }
+      }
+
       if (isExitStatus || isInternshipDone) {
         try {
           const autoChecklist = await this.ensureExitChecklistForEmployee(

@@ -633,6 +633,7 @@ export const DateWiseShiftPage = () => {
         const c = row.cell;
         if (!c) return false;
         if (rosterStatusFilter === 'WORKING') {
+          if (c.shiftType === 'NA' || c.displayType === 'NA' || c.cellText === '-') return false;
           return c.displayType === 'SHIFT' || c.displayType === 'OVERRIDE' || (!c.holiday && !c.leave && c.shiftType !== 'WO');
         }
         if (rosterStatusFilter === 'WO') {
@@ -688,6 +689,10 @@ export const DateWiseShiftPage = () => {
       total++;
       const cell = r.cells?.[selectedRosterDate];
       if (!cell) return;
+      if (cell.shiftType === 'NA' || cell.displayType === 'NA' || cell.cellText === '-') {
+        // Exited, terminated, or pre-joining employees are not working
+        return;
+      }
       if (cell.holiday || cell.displayType === 'HOLIDAY') {
         holiday++;
       } else if (cell.isHalfDay || cell.leave || cell.displayType === 'LEAVE' || cell.displayType === 'HALF_DAY') {
@@ -713,6 +718,12 @@ export const DateWiseShiftPage = () => {
     if (!canEditShifts) return;
     if (hasRole('HR') && !hasRole('Admin') && !hasRole('SuperAdmin') && user?.employeeId === emp.id) {
       toast.error('You cannot modify your own shift timings.');
+      return;
+    }
+    const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((emp?.status || '').toLowerCase());
+    const exitDate = emp?.lastWorkingDay ? (emp.lastWorkingDay instanceof Date ? emp.lastWorkingDay.toISOString().split('T')[0] : String(emp.lastWorkingDay).slice(0, 10)) : null;
+    if (isExited && exitDate && dateStr >= exitDate) {
+      toast.warning(`Cannot modify shift: ${emp.fullName || 'Employee'} has exited/terminated as of ${exitDate}.`);
       return;
     }
     setModalTargetEmployee(emp);
@@ -778,6 +789,18 @@ export const DateWiseShiftPage = () => {
   // Toggle selection of a single date
   const handleToggleDate = (dateKey) => {
     if (!canEditShifts) return;
+    const targetEmp = modalTargetEmployee || activeEmployee || selectedEmployee;
+    const doj = targetEmp?.dateOfJoining ? String(targetEmp.dateOfJoining).slice(0, 10) : '';
+    if (doj && dateKey < doj) {
+      toast.warning(`Cannot select date prior to joining date (${doj}).`);
+      return;
+    }
+    const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((targetEmp?.status || '').toLowerCase());
+    const exitDate = targetEmp?.lastWorkingDay ? (targetEmp.lastWorkingDay instanceof Date ? targetEmp.lastWorkingDay.toISOString().split('T')[0] : String(targetEmp.lastWorkingDay).slice(0, 10)) : null;
+    if (isExited && exitDate && dateKey >= exitDate) {
+      toast.warning(`Cannot select date on or after exit date (${exitDate}).`);
+      return;
+    }
     setSelectedDates((prev) => {
       const next = new Set(prev);
       if (next.has(dateKey)) {
@@ -794,8 +817,16 @@ export const DateWiseShiftPage = () => {
     if (!canEditShifts) return;
     const all = new Set();
     const doj = selectedEmployee?.dateOfJoining ? String(selectedEmployee.dateOfJoining).slice(0, 10) : '';
+    const targetEmp = modalTargetEmployee || activeEmployee || selectedEmployee;
+    const doj = targetEmp?.dateOfJoining ? String(targetEmp.dateOfJoining).slice(0, 10) : '';
+    const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((targetEmp?.status || '').toLowerCase());
+    const exitDate = targetEmp?.lastWorkingDay ? (targetEmp.lastWorkingDay instanceof Date ? targetEmp.lastWorkingDay.toISOString().split('T')[0] : String(targetEmp.lastWorkingDay).slice(0, 10)) : null;
+
     calendarDays.forEach((d) => {
       if (!d.empty && (!doj || d.dateKey >= doj)) all.add(d.dateKey);
+      if (!d.empty && (!doj || d.dateKey >= doj) && (!isExited || !exitDate || d.dateKey < exitDate)) {
+        all.add(d.dateKey);
+      }
     });
     setSelectedDates(all);
   };
@@ -809,8 +840,17 @@ export const DateWiseShiftPage = () => {
   const handleOpenAssignForDate = (dateKey) => {
     if (!canEditShifts) return;
     const doj = selectedEmployee?.dateOfJoining ? String(selectedEmployee.dateOfJoining).slice(0, 10) : '';
+    const targetEmp = modalTargetEmployee || activeEmployee || selectedEmployee;
+    const doj = targetEmp?.dateOfJoining ? String(targetEmp.dateOfJoining).slice(0, 10) : '';
     if (doj && dateKey < doj) {
       toast.warning(`${selectedEmployee?.fullName || 'Employee'} joined on ${doj}. Shifts cannot be scheduled prior to joining date.`);
+      toast.warning(`${targetEmp?.fullName || 'Employee'} joined on ${doj}. Shifts cannot be scheduled prior to joining date.`);
+      return;
+    }
+    const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((targetEmp?.status || '').toLowerCase());
+    const exitDate = targetEmp?.lastWorkingDay ? (targetEmp.lastWorkingDay instanceof Date ? targetEmp.lastWorkingDay.toISOString().split('T')[0] : String(targetEmp.lastWorkingDay).slice(0, 10)) : null;
+    if (isExited && exitDate && dateKey >= exitDate) {
+      toast.warning(`${targetEmp?.fullName || 'Employee'} has exited/terminated as of ${exitDate}. Shifts cannot be scheduled on or after exit date.`);
       return;
     }
     setSelectedDates(new Set([dateKey]));
@@ -938,6 +978,12 @@ export const DateWiseShiftPage = () => {
   const handleOpenMatrixCell = async (employee, dateKey, cell) => {
     if (employee.dateOfJoining && dateKey < employee.dateOfJoining) {
       toast.warning(`${employee.fullName || employee.firstName} joined on ${employee.dateOfJoining}. Shifts cannot be scheduled prior to joining date.`);
+      return;
+    }
+    const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((employee?.status || '').toLowerCase());
+    const exitDate = employee?.lastWorkingDay ? (employee.lastWorkingDay instanceof Date ? employee.lastWorkingDay.toISOString().split('T')[0] : String(employee.lastWorkingDay).slice(0, 10)) : null;
+    if (isExited && exitDate && dateKey >= exitDate) {
+      toast.warning(`${employee.fullName || employee.firstName} has exited/terminated as of ${exitDate}. Shifts cannot be scheduled on or after exit date.`);
       return;
     }
 
@@ -1455,6 +1501,14 @@ export const DateWiseShiftPage = () => {
                       const empDOJ = rawDOJ ? (rawDOJ instanceof Date ? rawDOJ.toISOString().slice(0, 10) : String(rawDOJ).slice(0, 10)) : '';
                       const isPreJoining = Boolean(empDOJ && day.dateKey < empDOJ);
                       const isNA = isPreJoining || cell?.shortLabel === 'NA' || cell?.displayType === 'NA' || cell?.shiftType === 'NA' || cell?.cellText === '-';
+
+                      const empStatus = (row.employee?.status || matchedEmp?.status || '').toLowerCase();
+                      const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes(empStatus);
+                      const rawLWD = row.employee?.lastWorkingDay || matchedEmp?.lastWorkingDay;
+                      const empLWD = rawLWD ? (rawLWD instanceof Date ? rawLWD.toISOString().slice(0, 10) : String(rawLWD).slice(0, 10)) : '';
+                      const isPostExit = Boolean(isExited && empLWD && day.dateKey >= empLWD);
+
+                      const isNA = isPreJoining || isPostExit || cell?.shortLabel === 'NA' || cell?.displayType === 'NA' || cell?.shiftType === 'NA' || cell?.cellText === '-';
                       const isSun = !isNA && (day.dayName === 'Sun' || cell?.isSunday);
                       const isWO = !isNA && (cell?.shiftType === 'WO' || cell?.displayType === 'WO' || isSun);
                       const isHoliday = !isNA && (cell?.holiday || cell?.shiftType === 'HL' || cell?.shiftType === 'HOLIDAY' || cell?.displayType === 'HOLIDAY');
@@ -1463,6 +1517,8 @@ export const DateWiseShiftPage = () => {
                       const isOverride = Boolean(!isNA && (cell?.isOverride || cell?.displayType === 'OVERRIDE'));
                       const text = isPreJoining ? '-' : (cell?.cellText || cell?.shortLabel || (isWO ? 'WO' : '-'));
                       const att = isPreJoining ? null : cell?.attendance;
+                      const text = (isPreJoining || isPostExit) ? '-' : (cell?.cellText || cell?.shortLabel || (isWO ? 'WO' : '-'));
+                      const att = (isPreJoining || isPostExit) ? null : cell?.attendance;
 
                       const isYellowBadge = isHalfDay || isLeave || ['CL', 'PL', 'SL', 'HD', 'UP', 'LEAVE'].includes(text);
                       const isHolidayBadge = isHoliday || text === 'HL' || text === 'HOLIDAY';
@@ -1476,6 +1532,10 @@ export const DateWiseShiftPage = () => {
                           onClick={() => {
                             if (isPreJoining) {
                               toast.warning(`${row.employee.fullName || 'Employee'} joined on ${empDOJ}. Shifts cannot be scheduled prior to joining date.`);
+                              return;
+                            }
+                            if (isPostExit) {
+                              toast.warning(`${row.employee.fullName || 'Employee'} has ${empStatus} as of ${empLWD}. Shifts cannot be scheduled on or after exit date.`);
                               return;
                             }
                             if (canEditShifts) {
@@ -1498,6 +1558,7 @@ export const DateWiseShiftPage = () => {
                             isSun ? 'bg-slate-50/60 dark:bg-slate-850/40' : ''
                           )}
                           title={(canEditShifts ? 'Click to edit shift or apply leave\n' : 'Click to view day details\n') + row.employee.fullName + ' | ' + day.dateKey + '\nShift: ' + (cell?.shiftLabel || (isWO ? 'Weekly Off (WO)' : text)) + (isOverride ? ' (Override)' : '')}
+                          title={(isPreJoining ? 'Not Joined Yet | ' : (isPostExit ? `${empStatus === 'terminated' ? 'Terminated' : 'Exited'} as of ${empLWD} | ` : (canEditShifts ? 'Click to edit shift or apply leave\n' : 'Click to view day details\n'))) + row.employee.fullName + ' | ' + day.dateKey + '\nShift: ' + (cell?.shiftLabel || (isWO ? 'Weekly Off (WO)' : text)) + (isOverride ? ' (Override)' : '')}
                         >
                           <div className="flex flex-col items-center justify-center min-h-[30px] leading-tight overflow-hidden w-full">
                             {isNA ? (
@@ -1575,12 +1636,20 @@ export const DateWiseShiftPage = () => {
                         const matchedEmp = employees.find((em) => em.id === row.employee?.id || (em.employeeCode && em.employeeCode === row.employee?.employeeCode));
                         const rawDOJ = row.employee?.dateOfJoining || row.employee?.date_of_joining || matchedEmp?.dateOfJoining || (row.employee?.fullName?.toLowerCase().includes('ashutosh') ? '2026-11-05' : '');
                         const empDOJ = rawDOJ ? (rawDOJ instanceof Date ? rawDOJ.toISOString().slice(0, 10) : String(rawDOJ).slice(0, 10)) : '';
+
+                        const empStatus = (row.employee?.status || matchedEmp?.status || '').toLowerCase();
+                        const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes(empStatus);
+                        const rawLWD = row.employee?.lastWorkingDay || matchedEmp?.lastWorkingDay;
+                        const empLWD = rawLWD ? (rawLWD instanceof Date ? rawLWD.toISOString().slice(0, 10) : String(rawLWD).slice(0, 10)) : '';
+
                         if (!empDOJ || !scheduleData?.days) {
                           return row.stats?.scheduledDays ?? 0;
                         }
                         let count = 0;
                         scheduleData.days.forEach((d) => {
                           if (d.dateKey < empDOJ) return;
+                          if (empDOJ && d.dateKey < empDOJ) return;
+                          if (isExited && empLWD && d.dateKey >= empLWD) return;
                           const c = row.cells?.[d.dateKey];
                           if (!c) return;
                           if (c.shiftType === 'WO' || c.displayType === 'WO' || d.dayName === 'Sun' || c.isSunday) return;

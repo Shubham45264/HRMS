@@ -1061,6 +1061,11 @@ export const exitService = {
     // 1. Mark employee profile status as 'Exited'
     if (emp) {
       await employeeRepository.update(emp.id, { status: 'Exited' });
+      const exitLwd = exit.approvedLastWorkingDay || exit.requestedLastWorkingDay || new Date().toISOString().split('T')[0];
+      await pool.query(
+        `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date >= $2`,
+        [emp.id, exitLwd]
+      ).catch((e) => logger.warn('ExitService', `Error removing post-exit shift assignments: ${e.message}`));
     }
 
     // 2. Reassign direct reports if this exiting employee is a manager
@@ -1368,6 +1373,11 @@ export const exitService = {
 
     // 2. Mark Employee Profile as Exited (Ensures Employee Inactive / Exited)
     await employeeRepository.update(emp.id, { status: 'Exited' });
+    const exitDate = exit.approvedLastWorkingDay || exit.requestedLastWorkingDay || new Date().toISOString().split('T')[0];
+    await pool.query(
+      `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date >= $2`,
+      [emp.id, exitDate]
+    ).catch((e) => logger.warn('ExitService', `Error removing post-exit shift assignments: ${e.message}`));
 
     // 3. Mark Exit Request as Completed
     const updatedExit = await exitRepository.update(exitRequestId, {
@@ -1669,6 +1679,12 @@ export const exitService = {
     // Update Employee Status
     const newEmpStatus = isImmediate ? 'Terminated' : 'Notice Period';
     await employeeRepository.update(emp.id, { status: newEmpStatus });
+    if (isImmediate) {
+      await pool.query(
+        `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date >= $2`,
+        [emp.id, effectiveDate]
+      ).catch((e) => logger.warn('ExitService', `Error removing post-termination shift assignments: ${e.message}`));
+    }
 
     // Initialize or update employee_offboardings
     await exitRepository.upsertOffboarding({

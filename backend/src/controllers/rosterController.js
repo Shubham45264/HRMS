@@ -680,11 +680,27 @@ export const confirmImport = async (req, res, next) => {
       }
 
       // Retrieve employee date of joining to skip scheduling before joining date
+      // Retrieve employee date of joining and exit date to skip scheduling outside employment
       const empDateRes = await client.query(
         `SELECT TO_CHAR(date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining" FROM employees WHERE id = $1`,
+        `SELECT 
+          TO_CHAR(e.date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining",
+          e.status,
+          COALESCE(
+            (SELECT eo.completed_date::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.completed_date IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT er.approved_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.approved_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT er.requested_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.requested_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+            (SELECT eo.last_working_day::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.last_working_day IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+            (SELECT ec.last_working_day::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.last_working_day IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+            e.internship_end_date::text,
+            CASE WHEN LOWER(e.status) IN ('exited', 'terminated', 'completed', 'inactive') THEN TO_CHAR(e.updated_at, 'YYYY-MM-DD') ELSE NULL END
+          ) AS "lastWorkingDay"
+        FROM employees e WHERE e.id = $1`,
         [employeeId]
       );
       const empJoiningDate = empDateRes.rows[0]?.dateOfJoining;
+      const isExitedEmp = ['exited', 'completed', 'terminated', 'inactive'].includes((empDateRes.rows[0]?.status || '').toLowerCase());
+      const empExitDate = empDateRes.rows[0]?.lastWorkingDay;
 
       for (const day of rosterEmp.dailyAssignments) {
         // Skip blank / unspecified cells - do NOT remove or alter existing assignments
@@ -694,6 +710,11 @@ export const confirmImport = async (req, res, next) => {
 
         // Skip dates prior to employee joining date
         if (empJoiningDate && day.date < empJoiningDate) {
+          continue;
+        }
+
+        // Skip dates on or after employee's exit/termination date
+        if (isExitedEmp && empExitDate && day.date >= empExitDate) {
           continue;
         }
 
@@ -1293,6 +1314,44 @@ async function syncSingleDayAssignment({
   day
 }) {
   const leaveYear = parseInt(day.date.split('-')[0], 10);
+
+  // Check employee joining date and exit date to prevent scheduling shifts outside employment
+  const empDateRes = await client.query(
+    `SELECT 
+      TO_CHAR(e.date_of_joining, 'YYYY-MM-DD') AS "dateOfJoining",
+      e.status,
+      COALESCE(
+        (SELECT eo.completed_date::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.completed_date IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+        (SELECT er.approved_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.approved_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+        (SELECT er.requested_last_working_day::text FROM exit_requests er WHERE er.employee_id = e.id AND er.requested_last_working_day IS NOT NULL ORDER BY er.created_at DESC LIMIT 1),
+        (SELECT eo.last_working_day::text FROM employee_offboardings eo WHERE eo.employee_id = e.id AND eo.last_working_day IS NOT NULL ORDER BY eo.created_at DESC LIMIT 1),
+        (SELECT ec.last_working_day::text FROM exit_checklists ec WHERE ec.employee_id = e.id AND ec.last_working_day IS NOT NULL ORDER BY ec.created_at DESC LIMIT 1),
+        e.internship_end_date::text,
+        CASE WHEN LOWER(e.status) IN ('exited', 'terminated', 'completed', 'inactive') THEN TO_CHAR(e.updated_at, 'YYYY-MM-DD') ELSE NULL END
+      ) AS "lastWorkingDay"
+    FROM employees e WHERE e.id = $1`,
+    [employeeId]
+  );
+  const empJoiningDate = empDateRes.rows[0]?.dateOfJoining;
+  const isExitedEmp = ['exited', 'completed', 'terminated', 'inactive'].includes((empDateRes.rows[0]?.status || '').toLowerCase());
+  const empExitDate = empDateRes.rows[0]?.lastWorkingDay;
+
+  if (isExitedEmp && empExitDate && day.date >= empExitDate) {
+    // Clean up any stale shift assignment for this date and do not insert new ones
+    await client.query(
+      `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date = $2`,
+      [employeeId, day.date]
+    );
+    return;
+  }
+
+  if (empJoiningDate && day.date < empJoiningDate) {
+    await client.query(
+      `DELETE FROM shift_assignments WHERE employee_id = $1 AND assignment_date = $2`,
+      [employeeId, day.date]
+    );
+    return;
+  }
 
   // 1. Check existing assignment
   const existingAssign = await client.query(
