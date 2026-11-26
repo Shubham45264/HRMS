@@ -347,12 +347,6 @@ export const shiftManagementService = {
     // 1. Exited/Completed employees whose last working day was prior to this period (lwd < start) are excluded.
     // 2. Employees whose joining date is after this period (dateOfJoining > end) are excluded for month-wise view.
     eligibleEmployees = eligibleEmployees.filter((emp) => {
-      const isExited = ['exited', 'completed', 'terminated'].includes((emp.status || '').toLowerCase());
-      if (isExited && emp.lastWorkingDay) {
-        const lwdStr = emp.lastWorkingDay instanceof Date
-          ? emp.lastWorkingDay.toISOString().split('T')[0]
-          : String(emp.lastWorkingDay).slice(0, 10);
-        if (lwdStr < start) {
       const isExited = ['exited', 'completed', 'terminated', 'inactive'].includes((emp.status || '').toLowerCase());
       if (isExited) {
         const lwdStr = emp.lastWorkingDay
@@ -580,14 +574,11 @@ export const shiftManagementService = {
         empJoiningDate = '2026-11-05';
       }
 
-      // Determine last working day for exited/completed employees
-      const isExitedEmp = ['exited', 'completed', 'terminated'].includes((emp.status || '').toLowerCase());
       // Determine last working day / exit date for exited/completed/terminated employees
       const isExitedEmp = ['exited', 'completed', 'terminated', 'inactive'].includes((emp.status || '').toLowerCase());
       const isTerminated = (emp.status || '').toLowerCase() === 'terminated';
       const empLwd = emp.lastWorkingDay
         ? (emp.lastWorkingDay instanceof Date ? emp.lastWorkingDay.toISOString().split('T')[0] : String(emp.lastWorkingDay).slice(0, 10))
-        : null;
         : (isExitedEmp ? (emp.updatedAt ? (emp.updatedAt instanceof Date ? emp.updatedAt.toISOString().split('T')[0] : String(emp.updatedAt).slice(0, 10)) : new Date().toISOString().split('T')[0]) : null);
 
       const cells = {};
@@ -606,9 +597,6 @@ export const shiftManagementService = {
         const leave = empLeaves.find((l) => dateKey >= l.startDate && dateKey <= l.endDate) || null;
         const att = attendanceByEmpAndDate.get(`${emp.id}_${dateKey}`) || null;
 
-        // If employee has exited/completed, any dates strictly after their last working day
-        // did not have them working, so display as '-' and don't count towards schedule or weekly offs
-        const isAfterExit = Boolean(isExitedEmp && empLwd && dateKey > empLwd);
         // If employee has exited or is terminated, from that day onwards remove all shift associations:
         // - Terminated: effective immediately on termination date (dateKey >= empLwd)
         // - Exited/Completed: if attended on exit date, effective strictly after (dateKey > empLwd), otherwise dateKey >= empLwd
